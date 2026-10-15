@@ -1,0 +1,7 @@
+beamngpy
+gymnasium
+stable-baselines3
+numpy
+scipy
+matplotlib
+shapely
