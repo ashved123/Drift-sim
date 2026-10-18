@@ -14,8 +14,14 @@ procedurally generated track.
 
 - **BeamNG.drive** (Steam App ID 284160) is the physics simulator, controlled
   via the official **beamngpy** Python API (TCP link to a running instance).
-- Running on Linux via Steam Play/Proton (BeamNG has no native Linux build).
-  Network sockets pass through Proton fine for BeamNGpy.
+- Running the **Windows build via Proton** (`scripts/launch_beamng_proton.sh`,
+  also a desktop icon). The native Linux build exists but its Vulkan renderer
+  segfaults in Mesa's Intel driver (`libvulkan_intel.so`) on this Arrow Lake
+  laptop, even on Mesa 26.2.5 (kisak PPA). The launcher passes beamngpy's
+  usual flags (`-nosteam -tcom -tport 25252`); scripts then attach with
+  `bng.open(launch=False)` (i.e. run without `BNG_HOME`).
+- GridMap v2's ground is at **z ~ 100**, not 0. Spawning at z=0.5 drops the car
+  through the map. `spawn_middle` is (-122, -188, 100.75).
 - Level: BeamNG's built-in **GridMap** (flat test area), onto which a track is
   placed procedurally at runtime rather than using a hand-built map.
 
@@ -176,11 +182,11 @@ drift-rl/
 
 - [x] BeamNG.drive purchased, installing via Steam.
 - [x] Project scaffold + venv created.
-- [x] Python deps installed in `venv/` (beamngpy 1.36, gymnasium 1.4.0,
+- [x] Python deps installed in `venv/` (beamngpy 1.35.1 — pinned, 1.36 speaks a newer protocol than BeamNG 0.39.4 — gymnasium 1.4.0,
       stable-baselines3 2.9.0, torch 2.14.1, numpy, scipy, matplotlib, shapely).
       Track generator + env smoke-tested successfully end-to-end.
-- [ ] BeamNG connection smoke test (`scripts/test_beamng_connection.py` written,
-      not yet run).
+- [x] BeamNG connection smoke test passes (`scripts/test_beamng_connection.py`
+      against BeamNG launched via Proton).
 - [ ] Procedural track generator.
 - [ ] Gymnasium env wrapper around BeamNGpy (full hybrid action space, with
       per-stage masking).
