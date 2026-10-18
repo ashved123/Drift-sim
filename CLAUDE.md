@@ -20,19 +20,47 @@ procedurally generated track.
   laptop, even on Mesa 26.2.5 (kisak PPA). The launcher passes beamngpy's
   usual flags (`-nosteam -tcom -tport 25252`); scripts then attach with
   `bng.open(launch=False)` (i.e. run without `BNG_HOME`).
-- GridMap v2's ground is at **z ~ 100**, not 0. Spawning at z=0.5 drops the car
-  through the map. `spawn_middle` is (-122, -188, 100.75).
-- Level: BeamNG's built-in **GridMap** (flat test area), onto which a track is
-  placed procedurally at runtime rather than using a hand-built map.
+- (If using GridMap v2 instead: its ground is at **z ~ 100**, not 0. Spawning at
+  z=0.5 drops the car through the map. `spawn_middle` is (-122, -188, 100.75).
+  `scripts/test_beamng_connection.py` still uses GridMap v2.)
+- Levels (`src/envs/track_placement.py`), two modes:
+  - **island** (default): BeamNG's `template` level, a 1 km grass terrain with
+    ocean (z~115.7) around it. `src/track/terrain.py` generates an island
+    heightmap with rolling hills and the track cut in (smoothed road profile,
+    max 8% grade, gravel shoulders). It's written as a bundle (16-bit height
+    PNG, 16-bit material PNG, roads JSON) to `<BeamNG user dir>/temp/drift_rl/`
+    and applied by one Lua call: terrain heights + materials, the level's
+    rocks deleted, track recreated as DecalRoads. ~1 s per switch, no level
+    reload. Gotchas: `TerrainBlock:setHeight` takes height *above the block
+    base* in [0, maxHeight) and wraps past it; the game reads 8-bit PNG
+    texels as 0 (use 16-bit); ground cover grows by terrain material, so the
+    ground under the asphalt is BeachSand (the only material with none).
+    Large DecalRoads (long + 15 m wide) silently fail to render in whole or
+    in part, so roads are sent as ~60 m pieces with a node every ~4 m, and
+    DecalRoad's `looped` flag is not used (it leaves a gap at the seam).
+  - **flat**: `smallgrid` ("Grid, Small, Pure"), endless flat plane at z=0.
+    Its GroundPlane can't take DecalRoads, so the track is baked into the
+    scenario as MeshRoads (level reload per track).
+- Car: base-game drift car, Ibishu 200BX `bx` with `vehicles/bx/pro_drift_M.pc`.
+- Control panel: `python scripts/track_control_panel.py` (tkinter; Linux
+  needs `python3-tk`): seed prev/next/random, generation sliders, preview,
+  reset car, overhead/car camera. `src/envs/track_loader.py` prefetches the
+  next 5 seeds on worker threads; only one thread talks to BeamNG.
+  Terminal-only alternative: `scripts/view_track_in_beamng.py`.
 
 ## Track generation
 
-Procedural closed-loop track, generated in Python and placed into GridMap via
-BeamNG's road/decal road API:
-1. Scatter random control points in an annulus around a center point.
-2. Order by angle, fit a smooth closed spline (Catmull-Rom/Bezier) through them.
-3. Feed the resulting node list (x, y, z, width) to BeamNG's procedural/decal
-   road object so the game renders an actual drivable track surface.
+Procedural closed-loop track, generated in Python:
+1. Scatter control points in an annulus: one per evenly spaced angle slot,
+   jittered within its slot (fully random angles let two points bunch up and
+   produce hairpin kinks), with a random radius.
+2. Fit a smoothed periodic B-spline near them, resample evenly by arc length,
+   and take curvature analytically from the spline derivatives.
+3. Reject and regenerate (deterministically from the seed) any track whose
+   tightest corner radius is below the road width or whose road would overlap
+   itself. `scripts/check_track_generator.py` checks this over many seeds.
+4. Place it in the game (see Simulator above): surface, white edge lines,
+   striped curbs on tight corners, chequered start/finish line.
 
 This keeps "procedurally generated" literal (new random track per run/episode)
 while using BeamNG's real tire/surface physics instead of a toy model.
@@ -163,7 +191,9 @@ drift-rl/
 ## Environment notes
 
 - Python deps live in `venv/` (beamngpy, gymnasium, stable-baselines3, numpy,
-  scipy, matplotlib, shapely). Activate with `source venv/bin/activate`.
+  scipy, matplotlib, shapely). Activate with `source venv/bin/activate`
+  (Linux) or `venv\Scripts\activate` (Windows). The project is developed on
+  both; keep paths in code OS-neutral (`pathlib`, no hardcoded separators).
 - BeamNG.drive must be running (with its Lua console / API enabled) before any
   script under `src/envs/` or `scripts/test_beamng_connection.py` will connect.
 - Track generation code under `src/track/` has no BeamNG dependency and can be
@@ -187,7 +217,9 @@ drift-rl/
       Track generator + env smoke-tested successfully end-to-end.
 - [x] BeamNG connection smoke test passes (`scripts/test_beamng_connection.py`
       against BeamNG launched via Proton).
-- [ ] Procedural track generator.
+- [x] Procedural track generator (validated: no corner tighter than road
+      width, no self-overlap, evenly spaced samples), ~650-950 m long, 15 m wide.
+      Placed and drivable in BeamNG (smallgrid) via `scripts/view_track_in_beamng.py`.
 - [ ] Gymnasium env wrapper around BeamNGpy (full hybrid action space, with
       per-stage masking).
 - [ ] Custom hybrid-action policy (continuous heads + discrete gear head).
