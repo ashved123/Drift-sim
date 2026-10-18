@@ -25,8 +25,12 @@ BASE_Z = 100.0           # terrain block position z (lowest possible height)
 MAX_HEIGHT = 120.0       # heights span BASE_Z .. BASE_Z + MAX_HEIGHT
 SEA_Z = 115.73           # the level's ocean surface
 
-# Indices into the template terrain's material list.
-MAT_GRASS, MAT_SAND, MAT_DIRT, MAT_ROCK = 0, 1, 2, 3
+# Material codes used in the material map, and the template level's terrain
+# material each one means. Tyre grip comes from these (the road decal is only
+# paint), so the road itself must be Asphalt; the terrain block doesn't have it
+# by default and track_placement adds it at runtime.
+MAT_GRASS, MAT_SAND, MAT_DIRT, MAT_ROCK, MAT_ASPHALT = 0, 1, 2, 3, 4
+TERRAIN_MATERIALS = ("Grass", "BeachSand", "dirt_rocky_large", "rock", "Asphalt")
 
 LAND_Z = SEA_Z + 10.0     # average height of the island interior
 ISLAND_RADIUS = 400.0     # coastline distance from the centre (before noise)
@@ -52,7 +56,7 @@ def generate_terrain(track: dict, seed: int | None = None, hilliness: float = 1.
     natural = _island(X, Y, rng) + hilliness * _hills(X, Y, rng)
 
     centerline = track["centerline"]
-    width = track["width"]
+    widths = track.get("widths", np.full(len(centerline), track["width"]))
     road_z = _road_profile(natural, centerline)
 
     # Distance from every cell to the centerline, and the road height there.
@@ -60,8 +64,9 @@ def generate_terrain(track: dict, seed: int | None = None, hilliness: float = 1.
     dist, nearest = tree.query(np.stack([X.ravel(), Y.ravel()], axis=1), workers=-1)
     dist = dist.reshape(X.shape)
     road_here = road_z[nearest].reshape(X.shape)
+    half_width = (widths[nearest] / 2).reshape(X.shape)
 
-    flat = width / 2 + SHOULDER
+    flat = half_width + SHOULDER
     t = np.clip((dist - flat) / BLEND, 0.0, 1.0)
     t = t * t * (3 - 2 * t)  # smoothstep
     height = road_here * (1 - t) + natural * t
@@ -70,7 +75,7 @@ def generate_terrain(track: dict, seed: int | None = None, hilliness: float = 1.
     height = np.where(dist <= flat, road_here, gaussian_filter(height, 2.0))
     height = np.clip(height, BASE_Z, BASE_Z + MAX_HEIGHT)
 
-    material = _materials(height, dist, width)
+    material = _materials(height, dist, half_width)
     return {"height": height, "material": material, "road_z": road_z}
 
 
@@ -123,13 +128,12 @@ def _road_profile(natural: np.ndarray, centerline: np.ndarray) -> np.ndarray:
     return np.maximum(smooth, SEA_Z + 3.0)
 
 
-def _materials(height: np.ndarray, dist: np.ndarray, width: float) -> np.ndarray:
+def _materials(height: np.ndarray, dist: np.ndarray, half_width: np.ndarray) -> np.ndarray:
     material = np.full(height.shape, MAT_GRASS, dtype=np.uint8)
     gy, gx = np.gradient(height, SQUARE_SIZE)
     material[np.hypot(gx, gy) > 0.7] = MAT_ROCK          # steeper than ~35 degrees
     material[height < SEA_Z + 1.5] = MAT_SAND             # beaches
-    material[dist <= width / 2 + SHOULDER] = MAT_DIRT     # gravel run-off
-    # Under the asphalt itself: sand, the one material with no ground cover, so
-    # neither grass nor the gravel's pebbles poke through the road.
-    material[dist <= width / 2 + 0.5] = MAT_SAND
+    material[dist <= half_width + SHOULDER] = MAT_DIRT    # gravel run-off
+    # The road: asphalt grip, and no ground cover (grass/pebbles) poking through.
+    material[dist <= half_width] = MAT_ASPHALT
     return material

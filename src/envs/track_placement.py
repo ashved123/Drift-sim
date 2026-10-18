@@ -72,33 +72,34 @@ def track_layers(track: dict, center=TRACK_CENTER) -> list[dict]:
     """The track's visual pieces: surface, edge lines, corner curbs and start/finish line.
 
     Each layer: name, kind, material, points (M, 2), idx (M,) centerline sample
-    each point belongs to (for looking up road height), width, looped.
+    each point belongs to (for looking up road height), widths (M,), looped.
     """
     pts = world_centerline(track, center)
-    width = track["width"]
+    road_w = track.get("widths", np.full(len(pts), track["width"]))
     normals = _normals(pts)
     all_idx = np.arange(len(pts))
     layers = [dict(name="drift_track", kind="surface", material=None, points=pts, idx=all_idx,
-                   width=width, looped=True)]
+                   widths=road_w, looped=True)]
 
-    edge_offset = width / 2 - EDGE_LINE_WIDTH
+    edge_offset = (road_w / 2 - EDGE_LINE_WIDTH)[:, None]
     for side, sign in (("left", 1.0), ("right", -1.0)):
         layers.append(dict(name=f"drift_track_edge_{side}", kind="edge", material=EDGE_MATERIAL,
                            points=pts + sign * edge_offset * normals, idx=all_idx,
-                           width=EDGE_LINE_WIDTH, looped=True))
+                           widths=np.full(len(pts), EDGE_LINE_WIDTH), looped=True))
 
     # Curbs on the inside edge of each tight corner (positive curvature turns left).
-    curb_offset = width / 2 + CURB_WIDTH / 2
+    curb_offset = (road_w / 2 + CURB_WIDTH / 2)[:, None]
     for i, (start, end) in enumerate(_corner_runs(track["curvature"], CURB_MIN_CURVATURE)):
         idx = np.arange(start, end + 1) % len(pts)
         sign = np.sign(track["curvature"][idx].mean())
         layers.append(dict(name=f"drift_track_curb_{i}", kind="curb", material=CURB_MATERIAL,
-                           points=pts[idx] + sign * curb_offset * normals[idx], idx=idx,
-                           width=CURB_WIDTH, looped=False))
+                           points=pts[idx] + sign * curb_offset[idx] * normals[idx], idx=idx,
+                           widths=np.full(len(idx), CURB_WIDTH), looped=False))
 
+    half = road_w[0] / 2
     layers.append(dict(name="drift_track_start", kind="start", material=START_MATERIAL,
-                       points=np.array([pts[0] - (width / 2) * normals[0], pts[0] + (width / 2) * normals[0]]),
-                       idx=np.array([0, 0]), width=2.0, looped=False))
+                       points=np.array([pts[0] - half * normals[0], pts[0] + half * normals[0]]),
+                       idx=np.array([0, 0]), widths=np.array([2.0, 2.0]), looped=False))
     return layers
 
 
@@ -107,13 +108,13 @@ def track_layers(track: dict, center=TRACK_CENTER) -> list[dict]:
 def add_track_to_scenario(scenario: Scenario, track: dict, center=TRACK_CENTER, ground_z: float = GROUND_Z) -> None:
     """Bake the track into a smallgrid scenario as MeshRoads."""
     for layer in track_layers(track, center):
-        points = layer["points"]
+        points, widths = layer["points"], layer["widths"]
         if layer["looped"]:  # MeshRoads have no loop flag; close it by repeating the first node
-            points = np.vstack([points, points[:1]])
+            points, widths = np.vstack([points, points[:1]]), np.append(widths, widths[0])
         road = MeshRoad(layer["material"] or MESH_ROAD_MATERIAL, rid=layer["name"],
-                        default_width=layer["width"], default_depth=MESH_DEPTH)
+                        default_width=float(widths[0]), default_depth=MESH_DEPTH)
         top = ground_z + LAYER_TOP[layer["kind"]]
-        road.add_nodes(*[(x, y, top, layer["width"]) for x, y in points])
+        road.add_nodes(*[(x, y, top, float(w)) for (x, y), w in zip(points, widths)])
         scenario.add_mesh_road(road)
 
 
@@ -137,7 +138,7 @@ def write_island_bundle(user_dir: str | Path, name: str, track: dict, terrain: d
 
     roads = []
     for layer in track_layers(track):
-        points, idx = layer["points"], layer["idx"]
+        points, idx, widths = layer["points"], layer["idx"], layer["widths"]
         if len(points) > 2 * DECAL_NODE_STEP:
             # DecalRoads interpolate a smooth spline between nodes, so a node
             # every few metres is plenty; denser roads blow BeamNG's decal
@@ -145,21 +146,23 @@ def write_island_bundle(user_dir: str | Path, name: str, track: dict, terrain: d
             keep = np.arange(0, len(points), DECAL_NODE_STEP)
             if not layer["looped"] and keep[-1] != len(points) - 1:
                 keep = np.append(keep, len(points) - 1)
-            points, idx = points[keep], idx[keep]
+            points, idx, widths = points[keep], idx[keep], widths[keep]
         if layer["looped"]:
             # DecalRoad's 'looped' flag leaves a gap at the seam, so run the road
             # a few metres past its own start instead.
             points = np.vstack([points, points[:LOOP_OVERLAP]])
             idx = np.concatenate([idx, idx[:LOOP_OVERLAP]])
+            widths = np.concatenate([widths, widths[:LOOP_OVERLAP]])
         z = terrain["road_z"][idx]
-        nodes = [[round(float(x), 3), round(float(y), 3), round(float(zz), 3), layer["width"]]
-                 for (x, y), zz in zip(points, z)]
+        nodes = [[round(float(x), 3), round(float(y), 3), round(float(zz), 3), round(float(w), 3)]
+                 for (x, y), zz, w in zip(points, z, widths)]
         # Very long DecalRoads stop rendering partway along, so split into overlapping chunks.
         for k, start in enumerate(range(0, max(len(nodes) - 2, 1), DECAL_CHUNK)):
             roads.append(dict(name=f"{layer['name']}_{k}", material=layer["material"] or DECAL_ROAD_MATERIAL,
                               priority=LAYER_PRIORITY[layer["kind"]], looped=False,
                               nodes=nodes[start:start + DECAL_CHUNK + 3]))
     (out / "roads.json").write_text(json.dumps(roads))
+    (out / "materials.json").write_text(json.dumps(list(T.TERRAIN_MATERIALS)))
     return bundle_rel
 
 
@@ -175,6 +178,22 @@ for _, name in ipairs(scenetree.findClassObjects('Forest') or {}) do
   if f then f:delete() end
 end
 
+-- Material code (index into materials.json) -> terrain block material index,
+-- adding any terrain material the block doesn't have yet (e.g. Asphalt).
+local codeToIdx = {}
+for code, name in ipairs(jsonReadFile(dir .. 'materials.json')) do
+  local idx = -1
+  for i = 0, tb:getMaterialCount() - 1 do
+    if tb:getMaterialName(i) == name then idx = i end
+  end
+  if idx < 0 then
+    tb:addMaterial(name, -1)
+    idx = tb:getMaterialCount() - 1
+    tb:updateMaterial(idx, name)
+  end
+  codeToIdx[code - 1] = idx
+end
+
 local hb, mb = GBitmap(), GBitmap()
 if not hb:loadFile(dir .. 'height.png') then return 'ERR loading height.png' end
 if not mb:loadFile(dir .. 'material.png') then return 'ERR loading material.png' end
@@ -186,7 +205,7 @@ for x = 0, N - 1 do
   for y = 0, N - 1 do
     tb:setHeight(x, y, hb:getTexel(x, y) * scale)
     pos:set(OX + x * SQ, OY + y * SQ, 0)
-    tb:setMaterialIdxWs(pos, floor(mb:getTexel(x, y) / MATSTEP + 0.5))
+    tb:setMaterialIdxWs(pos, codeToIdx[floor(mb:getTexel(x, y) / MATSTEP + 0.5)])
   end
 end
 tb:updateGrid(vec3(0, 0), vec3(N - 1, N - 1))

@@ -8,7 +8,7 @@ preview and car/camera buttons, use scripts/track_control_panel.py instead.
     python scripts/view_track_in_beamng.py --seed 0 --flat     # flat smallgrid
 
 Connects to a running BeamNG, or launches it from BNG_HOME / the default
-Windows Steam location (see track_control_panel.connect).
+Windows Steam location (see src/envs/bng_launch.py).
 """
 
 from __future__ import annotations
@@ -18,10 +18,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from src.envs.bng_launch import connect  # noqa: E402
 from src.envs.track_loader import TrackLoader, TrackParams  # noqa: E402
-from track_control_panel import connect  # noqa: E402
 
 
 def main() -> None:

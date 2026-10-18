@@ -33,6 +33,8 @@ class TrackParams:
     irregularity: float = 0.35      # how far corners push in/out from a circle
     width: float = 15.0             # road width, metres
     hilliness: float = 1.0          # island only: 0 = flat island, 2 = very hilly
+    adapt_width: bool = True        # narrow the road where a corner/section is too tight, instead of failing
+    min_width: float = 6.0          # narrowest the road may get when adapting, metres
 
     def key(self) -> str:
         return "_".join(f"{v}" for v in asdict(self).values())
@@ -50,10 +52,12 @@ class PreparedTrack:
 
 class TrackLoader:
     def __init__(self, bng: BeamNGpy, params: TrackParams = TrackParams(), prefetch: int = 5,
-                 model: str = P.DRIFT_CAR_MODEL, config: str | None = P.DRIFT_CAR_CONFIG):
+                 model: str = P.DRIFT_CAR_MODEL, config: str | None = P.DRIFT_CAR_CONFIG,
+                 keep_paused: bool = False):
         self.bng = bng
         self.params = params
         self.prefetch = prefetch
+        self.keep_paused = keep_paused  # training steps physics itself, so never unpause
         self.model, self.config = model, config
         self.vehicle: Vehicle | None = None
         self.current: PreparedTrack | None = None
@@ -87,9 +91,11 @@ class TrackLoader:
 
     def _build(self, seed: int, params: TrackParams) -> PreparedTrack:
         track = generate_track(num_control_points=params.num_control_points, radius=params.radius,
-                               irregularity=params.irregularity, width=params.width, seed=seed)
+                               irregularity=params.irregularity, width=params.width,
+                               adapt_width=params.adapt_width, min_width=params.min_width, seed=seed)
         length, _, max_k, corners, straight = track_feature_vector(track)
-        stats = dict(length=length, corners=int(corners), tightest=1 / max_k, straight=straight)
+        stats = dict(length=length, corners=int(corners), tightest=1 / max_k, straight=straight,
+                     min_width=float(track["widths"].min()))
         terrain = bundle = None
         if params.mode == "island":
             terrain = generate_terrain(track, seed=seed, hilliness=params.hilliness)
@@ -127,7 +133,8 @@ class TrackLoader:
             P.apply_island_bundle(self.bng, prepared.bundle)
             self.reset_car(prepared)
         finally:
-            self.bng.control.resume()
+            if not self.keep_paused:
+                self.bng.control.resume()
 
     def _load_flat(self, prepared: PreparedTrack) -> None:
         # MeshRoads are baked into the scenario, so every flat track reloads the level.
@@ -150,8 +157,8 @@ class TrackLoader:
             self.vehicle.connect(self.bng)
         ground = prepared.terrain["road_z"] if prepared.terrain is not None else P.GROUND_Z
         pos, rot = P.start_pose(prepared.track, ground_z=ground)
+        # Leaves the camera alone: if the user is in a free/overhead view it stays put.
         self.vehicle.teleport(pos, rot, reset=True)
-        self.bng.camera.set_player_mode(self.vehicle, "orbit", {})
 
     def car_camera(self) -> None:
         """Back to the normal chase camera behind the car."""

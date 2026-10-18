@@ -33,8 +33,12 @@ procedurally generated track.
     rocks deleted, track recreated as DecalRoads. ~1 s per switch, no level
     reload. Gotchas: `TerrainBlock:setHeight` takes height *above the block
     base* in [0, maxHeight) and wraps past it; the game reads 8-bit PNG
-    texels as 0 (use 16-bit); ground cover grows by terrain material, so the
-    ground under the asphalt is BeachSand (the only material with none).
+    texels as 0 (use 16-bit). **Tyre grip comes from the terrain material,
+    not the road decal** (decals are only paint), so the terrain under the
+    road is the level's `Asphalt` terrain material (ASPHALT ground model, no
+    ground cover), added to the terrain block at runtime via `addMaterial`;
+    shoulders are dirt_rocky_large (DIRT_DUSTY), off-track is Grass (GRASS).
+    Verified by reading each wheel's `contactMaterialID1` in vehicle Lua.
     Large DecalRoads (long + 15 m wide) silently fail to render in whole or
     in part, so roads are sent as ~60 m pieces with a node every ~4 m, and
     DecalRoad's `looped` flag is not used (it leaves a gap at the seam).
@@ -42,8 +46,12 @@ procedurally generated track.
     Its GroundPlane can't take DecalRoads, so the track is baked into the
     scenario as MeshRoads (level reload per track).
 - Car: base-game drift car, Ibishu 200BX `bx` with `vehicles/bx/pro_drift_M.pc`.
-- Control panel: `python scripts/track_control_panel.py` (tkinter; Linux
-  needs `python3-tk`): seed prev/next/random, generation sliders, preview,
+- Control panel: on Windows double-click `start_panel.bat` (creates venv +
+  installs requirements on first run, launches BeamNG itself — found via
+  BNG_HOME or any Steam library — so don't start the game from Steam first).
+  On Linux start the game with `scripts/launch_beamng_proton.sh`, then
+  `python scripts/track_control_panel.py` (tkinter; needs `python3-tk`).
+  Panel: seed prev/next/random, generation sliders, preview,
   reset car, overhead/car camera. `src/envs/track_loader.py` prefetches the
   next 5 seeds on worker threads; only one thread talks to BeamNG.
   Terminal-only alternative: `scripts/view_track_in_beamng.py`.
@@ -59,6 +67,11 @@ Procedural closed-loop track, generated in Python:
 3. Reject and regenerate (deterministically from the seed) any track whose
    tightest corner radius is below the road width or whose road would overlap
    itself. `scripts/check_track_generator.py` checks this over many seeds.
+   With `adapt_width=True` (the control panel default) a failing candidate is
+   kept instead, with the road narrowed smoothly (~15 m taper) just where a
+   corner or neighbouring section is too tight, down to `min_width` (6 m), so
+   generation never errors. Tracks carry per-sample `widths`; terrain, road
+   placement and the env's off-track check all use them, not `width`.
 4. Place it in the game (see Simulator above): surface, white edge lines,
    striped curbs on tight corners, chequered start/finish line.
 
@@ -83,10 +96,19 @@ while using BeamNG's real tire/surface physics instead of a toy model.
   mask overrides unlocked-but-not-yet-active dims to safe defaults (e.g. brake
   forced 0, clutch forced "fully engaged", gear left on auto) until that stage
   unlocks them.
-- **Observation space:** vehicle state relative to the track centerline —
-  lateral offset, heading error, upcoming curvature, speed, slip angle
-  (velocity-vector vs heading mismatch), wheel speeds, current gear + RPM
-  once gear control is unlocked, cumulative damage — rather than raw pixels.
+- **Observation space:** vehicle state relative to the track centerline
+  rather than raw pixels (15 floats, see `src/envs/drift_env.py`): lateral
+  offset / half road width, heading error, curvature 10/30/60 m ahead,
+  forward + sideways speed, yaw rate, slip angle, wheelspin (BeamNG only
+  exposes an *average* wheel speed, not per-wheel), rpm fraction, gear,
+  scaled damage, previous steer/throttle. Normalised by SB3 `VecNormalize`.
+- **Stepping:** BeamNG deterministic mode at 60 frames/s, game paused, each
+  env step advances 3 frames (20 Hz control). The env turns off the game's
+  VSync + FPS limiter while connected (they cap every frame *and* every
+  request to 60 Hz) and restores the user's values on `close()`. Measured
+  ~23 steps/s (1.2x real time) at 3440x1440; frames are render-bound, so a
+  smaller game window trains faster. Stages 1-3 set the gearbox to "arcade"
+  (automatic) via `controller.mainController.setGearboxMode`.
 - **Reward shaping:** see "Reward function" below.
 
 ### Reward function
@@ -97,7 +119,8 @@ All stages:
   the track" signal (same idea as CarRacing's tile rewards).
 - **Off-track penalty, with recovery grace:** while
   `lateral_offset > track_half_width`, apply an escalating penalty
-  `- k_offtrack * lateral_offset` and increment an `off_track_steps` counter;
+  `- k_offtrack * (lateral_offset - track_half_width)` (grows from 0 at the
+  road edge, no cliff) and increment an `off_track_steps` counter;
   only **terminate** once `off_track_steps > recovery_timeout` (placeholder:
   150 steps). Chosen deliberately over instant termination so the agent gets
   to practice catching a slide and recovering, at the cost of longer episodes
@@ -220,7 +243,13 @@ drift-rl/
 - [x] Procedural track generator (validated: no corner tighter than road
       width, no self-overlap, evenly spaced samples), ~650-950 m long, 15 m wide.
       Placed and drivable in BeamNG (smallgrid) via `scripts/view_track_in_beamng.py`.
-- [ ] Gymnasium env wrapper around BeamNGpy (full hybrid action space, with
-      per-stage masking).
+- [x] Gymnasium env wrapper around BeamNGpy (`src/envs/drift_env.py`): real
+      controls/sensors, new island track per episode, per-stage masking.
+      `scripts/test_drift_env.py` sanity check: centerline controller does
+      1.2 laps with +783 reward; random actions -2991, off-track terminate.
+- [x] Training pipeline (`src/training/train.py`): PPO + VecNormalize,
+      checkpoints every 20k steps to `models/stageN/`, TensorBoard in `runs/`,
+      resume with `--resume-from`; `scripts/watch_policy.py` replays a model.
+      Also extra terminations: flipped (40 steps) / stuck (200 steps).
 - [ ] Custom hybrid-action policy (continuous heads + discrete gear head).
 - [ ] Stage 1 training run.

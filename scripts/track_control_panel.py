@@ -9,15 +9,15 @@ between an overhead view and the car camera.
     python scripts/track_control_panel.py
 
 Connects to a running BeamNG (started with the research API, e.g. by
-scripts/launch_beamng_proton.sh on Linux); if none is running it launches the
-game from BNG_HOME, or from the default Steam location on Windows.
+scripts/launch_beamng_proton.sh on Linux); on Windows, if none is running it
+launches the game itself, found via BNG_HOME or any Steam library folder.
+Windows users can just double-click start_panel.bat in the project folder.
 Linux needs Tk for Python: `sudo apt install python3-tk`.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import random
 import sys
 import tkinter as tk
@@ -35,11 +35,8 @@ matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 
-from beamngpy import BeamNGpy  # noqa: E402
-
+from src.envs.bng_launch import connect  # noqa: E402
 from src.envs.track_loader import TrackLoader, TrackParams  # noqa: E402
-
-WINDOWS_STEAM_HOME = r"C:\Program Files (x86)\Steam\steamapps\common\BeamNG.drive"
 
 SLIDERS = [  # (param, label, from, to, resolution)
     ("num_control_points", "Corners", 8, 20, 1),
@@ -47,22 +44,8 @@ SLIDERS = [  # (param, label, from, to, resolution)
     ("width", "Road width (m)", 10, 20, 0.5),
     ("irregularity", "Wildness", 0.15, 0.5, 0.01),
     ("hilliness", "Hills", 0.0, 2.0, 0.1),
+    ("min_width", "Min road width (m)", 4, 12, 0.5),
 ]
-
-
-def connect(port: int) -> BeamNGpy:
-    """Attach to a running BeamNG, or launch one if none is running."""
-    bng = BeamNGpy("localhost", port)
-    try:
-        bng.open(launch=False)
-        return bng
-    except Exception:
-        home = os.environ.get("BNG_HOME") or (WINDOWS_STEAM_HOME if Path(WINDOWS_STEAM_HOME).exists() else None)
-        if not home:
-            raise RuntimeError("BeamNG isn't running and BNG_HOME isn't set; start the game first.")
-        bng = BeamNGpy("localhost", port, home=home)
-        bng.open(launch=True)
-        return bng
 
 
 class ControlPanel:
@@ -112,7 +95,10 @@ class ControlPanel:
             tk.Scale(gen, variable=var, from_=lo, to=hi, resolution=res, orient="horizontal", length=170,
                      command=lambda _v: self.settings_changed()).grid(row=i, column=1)
             self.slider_vars[name] = var
-        ttk.Button(gen, text="Reset defaults", command=self.reset_defaults).grid(row=len(SLIDERS) + 1, column=0,
+        self.adapt_var = tk.BooleanVar(value=defaults.adapt_width)
+        ttk.Checkbutton(gen, text="Narrow road where needed (never fail)", variable=self.adapt_var,
+                        command=self.settings_changed).grid(row=len(SLIDERS) + 1, column=0, columnspan=2, sticky="w")
+        ttk.Button(gen, text="Reset defaults", command=self.reset_defaults).grid(row=len(SLIDERS) + 2, column=0,
                                                                                  columnspan=2, pady=(6, 0))
 
         # Car / camera
@@ -152,7 +138,8 @@ class ControlPanel:
         v = {k: var.get() for k, var in self.slider_vars.items()}
         return TrackParams(mode=self.mode_var.get(), num_control_points=int(v["num_control_points"]),
                            radius=float(v["radius"]), irregularity=round(float(v["irregularity"]), 2),
-                           width=float(v["width"]), hilliness=round(float(v["hilliness"]), 1))
+                           width=float(v["width"]), hilliness=round(float(v["hilliness"]), 1),
+                           adapt_width=bool(self.adapt_var.get()), min_width=float(v["min_width"]))
 
     def seed(self) -> int:
         try:
@@ -169,8 +156,12 @@ class ControlPanel:
             try:
                 on_done(fut.result())
             except Exception as e:  # noqa: BLE001 - surface any failure to the user
-                self.status_var.set(f"Error: {e}")
-                messagebox.showerror("Drift track generator", str(e))
+                msg = str(e)
+                if "No drivable track" in msg:
+                    msg = ("These settings can't make a drivable track for this seed.\n\nTick 'Narrow road where "
+                           "needed', or lower road width / corners / wildness, or raise size.")
+                self.status_var.set("Error: " + msg.splitlines()[0])
+                messagebox.showerror("Drift track generator", msg)
                 self.set_busy(False)
         check()
 
@@ -202,6 +193,7 @@ class ControlPanel:
     def reset_defaults(self) -> None:
         d = TrackParams()
         self.mode_var.set(d.mode)
+        self.adapt_var.set(d.adapt_width)
         for k, var in self.slider_vars.items():
             var.set(getattr(d, k))
         self.settings_changed()
@@ -267,6 +259,8 @@ class ControlPanel:
                 f" · {s['straight']:.0%} straight")
         if "climb" in s:
             info += f" · {s['climb']:.1f} m elevation change"
+        if s["min_width"] < prepared.params.width - 0.05:
+            info += f"\nRoad narrowed to {s['min_width']:.1f} m in places (tight corners / close sections)"
         self.info_var.set(info)
 
     def poll_prefetch(self) -> None:
