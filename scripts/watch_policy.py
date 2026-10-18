@@ -32,7 +32,10 @@ def main() -> None:
     parser.add_argument("--episodes", type=int, default=2)
     parser.add_argument("--seed", type=int, default=100_000, help="first track seed")
     parser.add_argument("--hills", type=float, default=0.0)
+    parser.add_argument("--stop-file", type=Path, default=None, help="stop cleanly when this file appears")
     args = parser.parse_args()
+    if args.stop_file:
+        args.stop_file.unlink(missing_ok=True)
 
     stage = args.stage or int(args.checkpoint.parent.name.removeprefix("stage") or 1)
     venv = DummyVecEnv([lambda: DriftEnv(stage=stage, seed=args.seed, track_params=TrackParams(hilliness=args.hills))])
@@ -42,19 +45,26 @@ def main() -> None:
     venv.seed(args.seed)  # PPO.load re-seeds the env with the training seed; use ours
 
     obs = venv.reset()
-    episode, total = 1, 0.0
+    episode, total, steps = 1, 0.0, 0
+    print(f"Driving {args.episodes} episode(s) with {args.checkpoint} (stage {stage})", flush=True)
     try:
         while episode <= args.episodes:
+            steps += 1
+            if args.stop_file and steps % 20 == 0 and args.stop_file.exists():
+                print("Stopped.", flush=True)
+                break
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, infos = venv.step(action)
             total += float(reward[0])
             if done[0]:
                 info = infos[0]
                 print(f"episode {episode} (track seed {info['track_seed']}): {info['laps']:.2f} laps, "
-                      f"{info['progress']:.0f} m, reward {total:.0f}")
+                      f"{info['progress']:.0f} m, reward {total:.0f}, ended: {info.get('end_reason')}", flush=True)
                 episode, total = episode + 1, 0.0
     finally:
         venv.close()
+        if args.stop_file:
+            args.stop_file.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

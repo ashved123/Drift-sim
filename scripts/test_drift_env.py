@@ -46,11 +46,7 @@ def run_episode(env: DriftEnv, policy, max_steps: int, label: str) -> None:
         total += r
         off += abs(obs[0]) > 1.0
         if terminated or truncated:
-            reason = "terminated" if terminated else "truncated"
-            if terminated:
-                reason += (" (off track too long)" if env._off_track_steps > 0 else
-                           " (flipped)" if env._flipped_steps > 0 else
-                           " (stuck)" if env._stuck_steps > 0 else " (damage)")
+            reason = info["end_reason"]
             break
     dt = time.time() - t0
     print(f"[{label}] track seed {info['track_seed']}: {steps} steps in {dt:.1f}s "

@@ -20,9 +20,6 @@ procedurally generated track.
   laptop, even on Mesa 26.2.5 (kisak PPA). The launcher passes beamngpy's
   usual flags (`-nosteam -tcom -tport 25252`); scripts then attach with
   `bng.open(launch=False)` (i.e. run without `BNG_HOME`).
-- (If using GridMap v2 instead: its ground is at **z ~ 100**, not 0. Spawning at
-  z=0.5 drops the car through the map. `spawn_middle` is (-122, -188, 100.75).
-  `scripts/test_beamng_connection.py` still uses GridMap v2.)
 - Levels (`src/envs/track_placement.py`), two modes:
   - **island** (default): BeamNG's `template` level, a 1 km grass terrain with
     ocean (z~115.7) around it. `src/track/terrain.py` generates an island
@@ -46,15 +43,27 @@ procedurally generated track.
     Its GroundPlane can't take DecalRoads, so the track is baked into the
     scenario as MeshRoads (level reload per track).
 - Car: base-game drift car, Ibishu 200BX `bx` with `vehicles/bx/pro_drift_M.pc`.
-- Control panel: on Windows double-click `start_panel.bat` (creates venv +
-  installs requirements on first run, launches BeamNG itself — found via
-  BNG_HOME or any Steam library — so don't start the game from Steam first).
-  On Linux start the game with `scripts/launch_beamng_proton.sh`, then
-  `python scripts/track_control_panel.py` (tkinter; needs `python3-tk`).
-  Panel: seed prev/next/random, generation sliders, preview,
-  reset car, overhead/car camera. `src/envs/track_loader.py` prefetches the
-  next 5 seeds on worker threads; only one thread talks to BeamNG.
-  Terminal-only alternative: `scripts/view_track_in_beamng.py`.
+- **Drift Studio** (`scripts/drift_studio.py`, Windows: double-click
+  `start_studio.bat`, which also creates the venv + installs requirements on
+  first run): one tkinter window with tabs Tracks (seed/sliders/preview, load
+  in game, car & camera), Training (start/stop runs as a subprocess; Stop
+  drops a stop file and training saves `latest.zip` first), Models (checkpoints:
+  continue, next curriculum stage, watch it drive via `scripts/watch_policy.py`,
+  delete), Live, Progress, PPO (loop diagram with live phase + clipped
+  objective / ratio histogram, advantages, critic, exploration noise from
+  `ppo_viz.json`), Learning curves, Episodes. Code in `src/ui/`. A GameLock
+  lets only one of Tracks / training / replay drive BeamNG at a time.
+  Header: BeamNG status (port probe every 4 s while the game is free) and a
+  Launch BeamNG button. Linux: tkinter needs `python3-tk`.
+  `src/envs/track_loader.py` prefetches tracks.
+- **Launching** (`src/envs/bng_launch.py`, CLI `scripts/launch_beamng.py`):
+  starts BeamNG with `-nosteam -tcom -tport 25252 -tcom-listen-ip 127.0.0.1`
+  (Windows: the exe directly, detached; Linux: through Proton, same as
+  `scripts/launch_beamng_proton.sh`), waits for the port, then attaches with
+  retries. `game_state()` distinguishes ready / open-without-port (started from
+  Steam) / stopped; the former can be restarted. Probing the port (connect +
+  close) was verified not to disturb the API, idle or with a client attached.
+  Overrides: BNG_HOME, PROTON, STEAM_ROOT.
 
 ## Track generation
 
@@ -201,24 +210,33 @@ checkpoint rather than training from scratch.
 ## Project layout
 
 ```
-drift-rl/
-  venv/                  Python virtual environment (not committed)
-  src/
-    track/               Procedural spline track generator (pure Python, no BeamNG needed)
-    envs/                 Gymnasium env wrapping beamngpy (BeamNG required/running)
-    training/             PPO/SAC training scripts (Stable-Baselines3)
-  scripts/               One-off utility scripts (e.g. BeamNG connection test)
-  notebooks/             Exploration / result analysis
+start_studio.bat         Windows one-click launcher for Drift Studio (sets up venv on first run)
+start_studio.sh          Linux equivalent (checks python3-tk, installs CPU-only torch, then requirements)
+src/
+  track/                 Track + island terrain generation (pure numpy/scipy, no BeamNG needed)
+  envs/                  BeamNG side: launch/connect, track placement + loader, Gymnasium DriftEnv
+  training/              train.py (PPO), dashboard_log.py (writes runs/dash/ for the Studio)
+  ui/                    Drift Studio tabs (tkinter + matplotlib)
+scripts/
+  drift_studio.py        the all-in-one desktop app
+  watch_policy.py        replay a checkpoint in BeamNG (used by the Models tab)
+  test_drift_env.py      sanity-check the env with a hand-written controller
+  check_track_generator.py  validate the track generator over many seeds
+  launch_beamng.py       start BeamNG with the API port open (Windows / Linux via Proton)
+  launch_beamng_proton.sh   Linux shell equivalent (used by the laptop's desktop icon)
+models/stageN/           checkpoints (not committed)
+runs/                    dash/ (Studio data), TensorBoard logs, replay/ (not committed)
+venv/                    Python environment (not committed)
 ```
 
 ## Environment notes
 
-- Python deps live in `venv/` (beamngpy, gymnasium, stable-baselines3, numpy,
-  scipy, matplotlib, shapely). Activate with `source venv/bin/activate`
+- Python deps live in `venv/` (beamngpy, gymnasium, stable-baselines3, torch,
+  numpy, scipy, matplotlib, pillow, tensorboard). Activate with `source venv/bin/activate`
   (Linux) or `venv\Scripts\activate` (Windows). The project is developed on
   both; keep paths in code OS-neutral (`pathlib`, no hardcoded separators).
-- BeamNG.drive must be running (with its Lua console / API enabled) before any
-  script under `src/envs/` or `scripts/test_beamng_connection.py` will connect.
+- BeamNG must be reachable on the research API port (25252). The code
+  launches it itself if needed, on Windows and on Linux (Proton).
 - Track generation code under `src/track/` has no BeamNG dependency and can be
   developed/tested standalone at any time.
 
@@ -236,13 +254,12 @@ drift-rl/
 - [x] BeamNG.drive purchased, installing via Steam.
 - [x] Project scaffold + venv created.
 - [x] Python deps installed in `venv/` (beamngpy 1.35.1 — pinned, 1.36 speaks a newer protocol than BeamNG 0.39.4 — gymnasium 1.4.0,
-      stable-baselines3 2.9.0, torch 2.14.1, numpy, scipy, matplotlib, shapely).
+      stable-baselines3 2.9.0, torch 2.14.1, numpy, scipy, matplotlib, pillow, tensorboard).
       Track generator + env smoke-tested successfully end-to-end.
-- [x] BeamNG connection smoke test passes (`scripts/test_beamng_connection.py`
-      against BeamNG launched via Proton).
+- [x] BeamNG connection works (Windows native launch, Linux via Proton).
 - [x] Procedural track generator (validated: no corner tighter than road
       width, no self-overlap, evenly spaced samples), ~650-950 m long, 15 m wide.
-      Placed and drivable in BeamNG (smallgrid) via `scripts/view_track_in_beamng.py`.
+      Placed and drivable in BeamNG (island level; flat smallgrid option).
 - [x] Gymnasium env wrapper around BeamNGpy (`src/envs/drift_env.py`): real
       controls/sensors, new island track per episode, per-stage masking.
       `scripts/test_drift_env.py` sanity check: centerline controller does
@@ -251,5 +268,14 @@ drift-rl/
       checkpoints every 20k steps to `models/stageN/`, TensorBoard in `runs/`,
       resume with `--resume-from`; `scripts/watch_policy.py` replays a model.
       Also extra terminations: flipped (40 steps) / stuck (200 steps).
+- [x] Live training data: `src/training/dashboard_log.py` (SB3 callback)
+      writes `runs/dash/<run>/` (episodes.jsonl, updates.jsonl, status.json
+      every 10 steps with ~15 s of telemetry + PPO phase, current_track.json,
+      latest/best episode lines, ppo_viz.json / ppo_hist.jsonl from re-running
+      the updated policy on 512 sampled rollout steps). Writes retry and skip
+      on locked files (Windows/OneDrive) so logging can never kill training.
+      The env backs up the user's VSync/FPS settings to
+      `runs/.beamng_frame_settings.json` so even a killed run restores them.
+- [x] Drift Studio (all-in-one desktop app), see Simulator section.
 - [ ] Custom hybrid-action policy (continuous heads + discrete gear head).
 - [ ] Stage 1 training run.

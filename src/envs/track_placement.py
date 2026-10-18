@@ -56,6 +56,7 @@ MESH_DEPTH = 0.3
 # DecalRoad (island mode) draw order: higher draws on top.
 LAYER_PRIORITY = {"surface": 10, "edge": 9, "curb": 8, "start": 8}
 
+START_SETBACK = 5.0           # metres from the start line back to the car's position
 BUNDLE_DIR = "temp/drift_rl"  # relative to the BeamNG user folder
 MATERIAL_PNG_STEP = 4096      # material index i is stored as i * 4096 in a 16-bit PNG
 DECAL_NODE_STEP = 4           # use every 4th centerline sample (~4 m) as a DecalRoad node
@@ -249,17 +250,25 @@ def apply_island_bundle(bng: BeamNGpy, bundle_rel: str) -> None:
 # ---------------------------------------------------------------- shared
 
 def start_pose(track: dict, center=TRACK_CENTER, ground_z: float | np.ndarray = GROUND_Z):
-    """(pos, rot_quat) placing a vehicle just behind the start line, facing along the track.
+    """(pos, rot_quat) placing a vehicle centred behind the start line, square to it.
+
+    The start line is drawn perpendicular to the track direction at sample 0, so
+    the car faces exactly that direction and sits straight back from the line's
+    middle along it (not 5 samples back along the curve, which leaves it off
+    to one side and angled when the track bends just before the line).
 
     ground_z: a constant, or the per-sample road height (island mode `terrain["road_z"]`).
     """
     pts = world_centerline(track, center)
-    tx, ty = pts[1] - pts[-1]
-    # BeamNG vehicles face -y at zero rotation.
-    yaw = math.degrees(math.atan2(tx, -ty))
-    z = float(np.asarray(ground_z)[-5]) if np.ndim(ground_z) else float(ground_z)
-    pos = (float(pts[-5, 0]), float(pts[-5, 1]), z + 0.5)
-    return pos, angle_to_quat((0.0, 0.0, yaw))
+    tangent = pts[1] - pts[-1]  # same direction the start line's normal is built from
+    tangent /= np.linalg.norm(tangent)
+    # Measured in-game: rotating by yaw about z makes a vehicle face world heading
+    # (-90 - yaw) degrees (it faces -y at yaw 0, and positive yaw turns it clockwise).
+    heading = math.degrees(math.atan2(tangent[1], tangent[0]))
+    yaw = -90.0 - heading
+    x, y = pts[0] - START_SETBACK * tangent
+    z = float(np.asarray(ground_z)[0]) if np.ndim(ground_z) else float(ground_z)
+    return (float(x), float(y), z + 0.5), angle_to_quat((0.0, 0.0, yaw))
 
 
 def _normals(pts: np.ndarray) -> np.ndarray:

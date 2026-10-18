@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Launch the Windows BeamNG.drive build through Proton with the research API
 # (tcom) listening on localhost, then attach with:
-#   python scripts/test_beamng_connection.py   (no BNG_HOME)
+#   python scripts/drift_studio.py   (or scripts/test_drift_env.py; no BNG_HOME)
 #
 # Used instead of the native Linux build, whose Vulkan renderer crashes in
 # Mesa's Intel driver (libvulkan_intel.so) on Arrow Lake graphics.

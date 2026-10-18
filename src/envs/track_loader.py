@@ -6,7 +6,7 @@ next few seeds prepared on background threads so switching to them only pays
 the in-game part. All calls into BeamNG stay on the caller's thread — the
 prefetch workers only compute and write files.
 
-Used by `scripts/track_control_panel.py` and `scripts/view_track_in_beamng.py`.
+Used by Drift Studio's Tracks tab (`src/ui/tracks_tab.py`) and the training env.
 """
 
 from __future__ import annotations

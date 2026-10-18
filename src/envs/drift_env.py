@@ -34,6 +34,7 @@ episodes.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
@@ -73,6 +74,8 @@ CURVATURE_LOOKAHEAD_M = (10.0, 30.0, 60.0)
 PHYSICS_FPS = 60                 # deterministic-mode frames per simulated second
 FRAMES_PER_ACTION = 3            # 3 frames at 60 fps = 20 Hz control
 SETTLE_FRAMES = 30               # let the car settle on its suspension after a reset
+# The user's own VSync / FPS-limit values while an env has them switched off.
+FRAME_SETTINGS_BACKUP = Path(__file__).resolve().parents[2] / "runs" / ".beamng_frame_settings.json"
 
 
 class DriftEnv(gym.Env):
@@ -127,12 +130,20 @@ class DriftEnv(gym.Env):
         self.bng.settings.set_deterministic(PHYSICS_FPS)
         # VSync / the FPS limiter pin every simulated frame (and every request, which
         # the game handles once per frame) to the monitor's refresh rate. Turn them
-        # off while training; close() restores the user's own values.
-        self._saved_frame_settings = self._lua(
+        # off while training; close() restores the user's own values. The originals
+        # are also kept in a file, so a crashed/killed run doesn't make the next run
+        # mistake "off" for the user's setting.
+        current = self._lua(
             "local s = core_settings_settings "
             "local old = {vsync = s.getValue('vsync'), fpsLimitEnabled = s.getValue('fpsLimitEnabled')} "
             "s.setValue('vsync', false) s.setValue('fpsLimitEnabled', false) "
             "return jsonEncode(old)")
+        if FRAME_SETTINGS_BACKUP.exists():
+            self._saved_frame_settings = FRAME_SETTINGS_BACKUP.read_text(encoding="utf-8")
+        else:
+            self._saved_frame_settings = current
+            FRAME_SETTINGS_BACKUP.parent.mkdir(parents=True, exist_ok=True)
+            FRAME_SETTINGS_BACKUP.write_text(current, encoding="utf-8")
         self.loader = TrackLoader(self.bng, self.track_params, prefetch=2, keep_paused=True)
 
     def close(self):
@@ -143,6 +154,7 @@ class DriftEnv(gym.Env):
                 if getattr(self, "_saved_frame_settings", None):
                     self._lua("local old = jsonDecode('" + self._saved_frame_settings + "') "
                               "for k, v in pairs(old) do core_settings_settings.setValue(k, v) end return 'ok'")
+                    FRAME_SETTINGS_BACKUP.unlink(missing_ok=True)
                 self.bng.settings.set_nondeterministic()
                 self.bng.control.resume()
             finally:
@@ -211,13 +223,18 @@ class DriftEnv(gym.Env):
 
         raw = self._get_raw_vehicle_state()
         obs, info = self._build_obs(raw)
-        reward, progress = self._compute_reward(raw, info)
-        self._lap_progress += progress
+        reward, parts = self._compute_reward(raw, info)
+        self._lap_progress += parts["progress"]
         self._step_count += 1
-        terminated = self._is_terminated(raw)
+        end_reason = self._termination_reason(raw)
+        terminated = end_reason is not None
         truncated = self._step_count >= self.max_episode_steps
+        # Extra per-step detail for logging/dashboards (src/training/dashboard_log.py).
         info.update(progress=self._lap_progress, laps=self._lap_progress / self._track_total_length,
-                    speed=raw["v_long"], slip_angle=raw["slip_angle"], track_seed=self._track_seed)
+                    speed=raw["v_long"], slip_angle=raw["slip_angle"], track_seed=self._track_seed,
+                    reward_parts=parts, off_track=self._off_track_steps > 0,
+                    pos_xy=raw["pos_xy"].tolist(),
+                    end_reason=end_reason or ("time limit" if truncated else None))
         return obs, reward, terminated, truncated, info
 
     # ------------------------------------------------------------ actions
@@ -345,39 +362,45 @@ class DriftEnv(gym.Env):
             return slip_angle_abs / THETA_MAX
         return max(0.0, 1.0 - (slip_angle_abs - THETA_MAX) / THETA_FALLOFF)
 
-    def _compute_reward(self, raw: dict, info: dict) -> tuple[float, float]:
+    def _compute_reward(self, raw: dict, info: dict) -> tuple[float, dict]:
+        """Total reward and its parts (progress, time, offtrack, damage, drift); parts sum to the total."""
         progress_reward = self._unwrap_progress(info["arc_length"])
         self._prev_arc_length = info["arc_length"]
-
-        reward = progress_reward - TIME_PENALTY
+        parts = dict(progress=progress_reward, time=-TIME_PENALTY, offtrack=0.0, damage=0.0, drift=0.0)
 
         # Road width varies where the generator narrowed it (adapt_width).
         half_width = self._track["widths"][self._nearest_idx] / 2.0
         lateral = abs(info["lateral_offset"])
         if lateral > half_width:
             # Grows with distance past the road edge (no cliff at the edge itself).
-            reward -= K_OFFTRACK * (lateral - half_width)
+            parts["offtrack"] = -K_OFFTRACK * (lateral - half_width)
             self._off_track_steps += 1
         else:
             self._off_track_steps = 0
 
         delta_damage = max(0.0, raw["damage"] - self._prev_damage)
-        reward -= K_DAMAGE * delta_damage
+        parts["damage"] = -K_DAMAGE * delta_damage
         self._prev_damage = raw["damage"]
 
         if self.stage >= 3:
-            reward += progress_reward * self._drift_bump(abs(raw["slip_angle"]))
+            parts["drift"] = progress_reward * self._drift_bump(abs(raw["slip_angle"]))
 
-        return float(reward), progress_reward
+        return float(sum(parts.values())), parts
 
-    def _is_terminated(self, raw: dict) -> bool:
+    def _termination_reason(self, raw: dict) -> str | None:
+        """Why the episode should end now, or None to keep going."""
         self._flipped_steps = self._flipped_steps + 1 if raw["up_z"] < 0.3 else 0
         slow = abs(raw["v_long"]) < STUCK_SPEED and self._step_count > 100
         self._stuck_steps = self._stuck_steps + 1 if slow else 0
-        return (raw["damage"] >= DAMAGE_DESTROYED_THRESHOLD
-                or self._off_track_steps > RECOVERY_TIMEOUT
-                or self._flipped_steps > FLIPPED_STEPS
-                or self._stuck_steps > STUCK_STEPS)
+        if raw["damage"] >= DAMAGE_DESTROYED_THRESHOLD:
+            return "wrecked"
+        if self._off_track_steps > RECOVERY_TIMEOUT:
+            return "off track"
+        if self._flipped_steps > FLIPPED_STEPS:
+            return "flipped"
+        if self._stuck_steps > STUCK_STEPS:
+            return "stuck"
+        return None
 
 
 def _cumulative_arc_length(centerline: np.ndarray) -> tuple[np.ndarray, float]:

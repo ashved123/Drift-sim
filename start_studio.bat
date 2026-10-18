@@ -1,6 +1,6 @@
 @echo off
-rem Double-click to open the drift track control panel (Windows).
-rem Starts BeamNG.drive too if it isn't already running. Don't launch the game
+rem Double-click to open Drift Studio: tracks, training, models and live dashboards (Windows).
+rem BeamNG is started when you first load a track or start training. Don't launch the game
 rem from Steam first: a normal launch doesn't open the port Python controls it with.
 rem First run creates the Python environment (venv) and installs packages.
 setlocal
@@ -18,7 +18,7 @@ if not exist "venv\Scripts\python.exe" (
     )
 )
 
-"venv\Scripts\python.exe" -c "import beamngpy, numpy, scipy, matplotlib, PIL" >nul 2>nul
+"venv\Scripts\python.exe" -c "import beamngpy, numpy, scipy, matplotlib, PIL, gymnasium, stable_baselines3, torch" >nul 2>nul
 if errorlevel 1 (
     echo Installing Python packages - this can take several minutes the first time...
     "venv\Scripts\python.exe" -m pip install --upgrade pip
@@ -31,6 +31,6 @@ if errorlevel 1 (
     )
 )
 
-echo Starting the track control panel (BeamNG may take a minute to open)...
-"venv\Scripts\python.exe" scripts\track_control_panel.py %*
+echo Starting Drift Studio...
+"venv\Scripts\python.exe" scripts\drift_studio.py %*
 if errorlevel 1 pause

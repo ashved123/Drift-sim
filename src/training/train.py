@@ -12,12 +12,13 @@ Observations and rewards are normalised with VecNormalize (raw values range
 from radians to thousands of RPM); its running statistics are saved next to
 every checkpoint and must be loaded with it.
 
-Usage (BeamNG is launched/attached automatically on Windows; on Linux start it
-first with scripts/launch_beamng_proton.sh; close the track control panel):
+Usage (BeamNG is launched with its API port open, or attached to, automatically
+on Windows and Linux; normally you start runs from Drift Studio's Training tab):
     python -m src.training.train --stage 1
     python -m src.training.train --stage 1 --resume-from models/stage1/latest.zip --seed 5000
     python -m src.training.train --stage 2 --resume-from models/stage1/final.zip
-    tensorboard --logdir runs        # watch progress in a browser
+    python scripts/drift_studio.py   # start/stop runs + live dashboards (or start_studio.bat)
+    tensorboard --logdir runs        # raw SB3 curves
 
 Ctrl+C stops training and saves a checkpoint first.
 """
@@ -25,6 +26,7 @@ Ctrl+C stops training and saves a checkpoint first.
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 from stable_baselines3 import PPO
@@ -34,10 +36,27 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from src.envs.drift_env import DriftEnv
 from src.envs.track_loader import TrackParams
+from src.training.dashboard_log import DashboardLogger
 
 NET_ARCH = [256, 256]  # shared trunk; SB3 attaches separate actor/critic heads on top
 MODELS_DIR = Path("models")
 RUNS_DIR = Path("runs")
+
+
+class StopOnFile(BaseCallback):
+    """Ends training cleanly when `path` appears (how Drift Studio's Stop button works)."""
+
+    def __init__(self, path: Path | None):
+        super().__init__()
+        self.path = path
+        self.requested = False
+
+    def _on_step(self) -> bool:
+        if self.path is not None and self.n_calls % 20 == 0 and self.path.exists():
+            self.requested = True
+            print("Stop requested - finishing up and saving", flush=True)
+            return False
+        return True
 
 
 class EpisodeStats(BaseCallback):
@@ -68,6 +87,8 @@ def main():
     parser.add_argument("--hills", type=float, default=0.0, help="terrain hilliness (0 = flat island)")
     parser.add_argument("--new-track-every", type=int, default=1, help="episodes per generated track")
     parser.add_argument("--save-every", type=int, default=20_000, help="checkpoint every N steps")
+    parser.add_argument("--run-name", type=str, default=None, help="dashboard run folder (default: stageN_<time>)")
+    parser.add_argument("--stop-file", type=str, default=None, help="stop cleanly (and save) when this file appears")
     args = parser.parse_args()
 
     out_dir = MODELS_DIR / f"stage{args.stage}"
@@ -103,6 +124,9 @@ def main():
 
     checkpoints = CheckpointCallback(save_freq=args.save_every, save_path=str(out_dir), name_prefix="ppo",
                                      save_vecnormalize=True)
+    run_name = args.run_name or f"stage{args.stage}_{time.strftime('%Y%m%d-%H%M%S')}"
+    stop = StopOnFile(Path(args.stop_file) if args.stop_file else None)
+    dashboard = DashboardLogger(run_name, meta=dict(vars(args), run=run_name, models_dir=str(out_dir)))
 
     def save(name: str) -> None:
         path = out_dir / f"{name}.zip"
@@ -111,14 +135,17 @@ def main():
         print(f"Saved {path} (+ {stats_path(path).name})")
 
     try:
-        model.learn(total_timesteps=args.total_timesteps, callback=[checkpoints, EpisodeStats()],
+        model.learn(total_timesteps=args.total_timesteps, callback=[checkpoints, EpisodeStats(), dashboard, stop],
                     tb_log_name=f"stage{args.stage}", reset_num_timesteps=not args.resume_from)
-        save("final")
+        if not stop.requested:
+            save("final")
     except KeyboardInterrupt:
         print("Interrupted — saving before exit")
     finally:
         save("latest")
         venv.close()
+        if stop.path is not None:
+            stop.path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

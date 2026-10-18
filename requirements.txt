@@ -4,5 +4,5 @@ stable-baselines3
 numpy
 scipy
 matplotlib
-shapely
 pillow
+tensorboard  # train.py logs to it; SB3 errors without it
