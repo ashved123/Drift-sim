@@ -1,4 +1,4 @@
-beamngpy
+beamngpy==1.35.1  # protocol v1.26, matches BeamNG.drive 0.39.4
 gymnasium
 stable-baselines3
 numpy

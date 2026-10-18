@@ -176,8 +176,9 @@ drift-rl/
 
 - [x] BeamNG.drive purchased, installing via Steam.
 - [x] Project scaffold + venv created.
-- [ ] Python deps installed (pending — network was saturated by the BeamNG
-      download; retry once that finishes). `requirements.txt` lists them.
+- [x] Python deps installed in `venv/` (beamngpy 1.36, gymnasium 1.4.0,
+      stable-baselines3 2.9.0, torch 2.14.1, numpy, scipy, matplotlib, shapely).
+      Track generator + env smoke-tested successfully end-to-end.
 - [ ] BeamNG connection smoke test (`scripts/test_beamng_connection.py` written,
       not yet run).
 - [ ] Procedural track generator.
